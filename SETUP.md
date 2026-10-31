@@ -1,0 +1,215 @@
+# Firebase 第一次部署｜給 Claude 的施工說明
+
+你正在帶一位**從沒部署過 Firebase、也不一定懂程式**的使用者，把網頁放上網。
+請一步一步帶，一次只叫他做一件事，用白話講，不要叫他自己判斷技術問題。
+
+完工定義：使用者拿到真實網址、用手機和電腦都打開看過、程式碼有備份到私人 GitHub。
+
+## 七條鐵律
+
+1. **環境不對就停**：`firebase` 要在使用者自己的電腦上跑（見第 0 步）。
+2. **每次部署都寫明專案**：一律帶 `--project <專案ID>`，部署前先念給使用者確認。
+3. **鑰匙不進對話、不進 repo、不進 `public/`**：服務帳戶 JSON、`.env`、LINE／Gemini／OpenAI 金鑰都一樣。使用者貼給你就請他作廢重發。唯一例外：第 3 步的一次性登入碼。
+4. **`public/` 裡的東西等於公開給全世界**：部署前列出檔案清單給使用者看，Excel、CSV、資料匯出檔不准進去。
+5. **不准升級 Blaze 付費方案**，除非使用者聽完第 7 步說明並明確同意。
+6. **資料庫規則絕不開放**：不准 `allow read, write: if true`，也不要長期用「測試模式」。
+7. **沒看到就不說成功**：「Deploy complete」不算完工，要實際打開網址看到內容。
+
+## 第 0 步：確認環境
+
+先問使用者「你的電腦是 Windows 還是 Mac？」，再用 `uname -a`（PowerShell 用 `$PSVersionTable.OS`）看你的 shell 跑在哪裡。
+
+- shell 的作業系統和使用者一致 → 繼續。`node -v` 找不到指令只代表還沒裝，第 2 步會處理。
+- 使用者是 Windows／Mac，但 shell 是 Linux，或你在 Cowork、網頁版這類雲端沙盒 → **停止**，告訴他：
+
+  > 這件事要在你自己的電腦上做，登入狀態和檔案才留得住。請打開 Claude 桌面版的 **Code** 分頁，選 Local，資料夾選你的專案，再把同一句話貼過去。
+
+## 第 1 步：問三件事
+
+1. 這個網頁只是給人看，還是要存資料、要登入、要串通知？
+2. 網頁檔案在電腦的哪個資料夾？
+3. 要用哪個 Google 帳號？（建議實驗用的帳號，別和公司重要帳號混用）
+
+分流：
+
+| 需求 | 做法 |
+|---|---|
+| 只給人看 | 只用 Hosting，走完第 2～6 步 |
+| 要存資料或登入 | 第 2～6 步 + 第 8 步 |
+| 要定時、串 LINE／金流、藏金鑰的後端 | 需要 Cloud Functions，先走第 7 步 |
+
+## 第 2 步：準備工具
+
+- 沒有 Node.js：請使用者到 <https://nodejs.org> 裝 LTS 版。
+- 下面的 `firebase` 都代表 `npx -y firebase-tools@latest`，不用全域安裝。
+- Windows 的 PowerShell 擋 `npx` 時改用 `npx.cmd`。
+
+## 第 3 步：登入
+
+```bash
+firebase login --non-interactive
+```
+
+把印出的網址給使用者，請他登入後把授權碼貼回來，再跑 `firebase login <授權碼>`。
+Windows 在連結印出後可能跳 `Assertion failed`，連結有印出就先繼續。
+
+這條走不通時，請他自己開終端機跑 `npx -y firebase-tools@latest login`，瀏覽器登入完回來說一聲。
+用 `firebase login:list` 確認帳號正確。
+
+## 第 4 步：建專案
+
+新帳號要先同意條款，所以第一個專案請使用者自己建：
+
+1. 打開 <https://console.firebase.google.com>，新增專案。
+2. 取名時留意專案 ID，**它會變成網址，之後不能改**。
+3. Google Analytics 關掉。不需要綁信用卡。
+
+接著確認：
+
+```bash
+firebase projects:list
+firebase hosting:sites:list --project <專案ID>
+```
+
+新專案通常已自動有網站。清單是空的才跑 `firebase hosting:sites:create <專案ID> --project <專案ID>`；回 already exists 就當作已有。
+
+## 第 5 步：放設定檔
+
+⚠️ **不要跑 `firebase init`**，它會停在互動問答，直接把下面三個檔案寫到專案根目錄。
+
+網頁檔放進 `public/`，入口要是 `public/index.html`。React、Vite 這類先 `npm run build`，再把 `public` 改成 `dist`。
+
+`firebase.json`：
+
+```json
+{
+  "hosting": {
+    "public": "public",
+    "ignore": ["firebase.json", "**/.*", "**/node_modules/**"],
+    "headers": [
+      { "source": "/", "headers": [{ "key": "Cache-Control", "value": "no-cache, no-store, must-revalidate" }] },
+      { "source": "**/*.@(html|js|css)", "headers": [{ "key": "Cache-Control", "value": "no-cache, no-store, must-revalidate" }] }
+    ]
+  }
+}
+```
+
+`.firebaserc`：
+
+```json
+{ "projects": { "default": "<專案ID>" } }
+```
+
+`.gitignore`：
+
+```gitignore
+node_modules/
+.firebase/
+.env
+.env.*
+*-firebase-adminsdk-*.json
+service-account*.json
+*.log
+```
+
+快取設定不能省，少了它使用者會一直看到舊版。
+
+## 第 6 步：部署與驗收
+
+1. 列出 `public/` 檔案給使用者看（鐵律 4）。
+2. 部署：
+
+```bash
+firebase deploy --only hosting --project <專案ID>
+```
+
+3. 驗收：
+   - 用 `curl -I https://<專案ID>.web.app/`（Windows 用 `curl.exe -I`）確認 200，且 `Cache-Control` 含 `no-cache`。
+   - 有 Playwright 就用無頭瀏覽器開桌機和手機寬度，`pageerror` 要是 0，主按鈕要按得動。
+   - 請使用者用手機和電腦各開一次。
+4. 把網址單獨一行給他。
+
+## 第 7 步：要花錢的東西（只有需要時才做）
+
+Cloud Functions 需要 Blaze 方案，要綁信用卡。升級前先白話講清楚：
+
+- Blaze 是用多少付多少，**預算警示只會通知，不會自動停止收費**。
+- 請使用者設預算警示，並先估這次改動的讀寫量。
+- 寫 Cloud Function 時，trigger **絕不能寫回觸發自己的文件**而沒有防迴圈。曾有人這樣 4 天燒掉上千美元。
+- 排程至少間隔 5 分鐘，不要設 min-instances。
+- 金鑰用 `firebase functions:secrets:set`，不寫進前端。
+
+使用者同意了才繼續。
+
+## 第 8 步：要存資料或登入時
+
+- Firestore 請使用者先在主控台建立，用**正式模式**，地區台灣選 `asia-east1`（建了不能改）。
+- ⚠️ **一定要先建好資料庫才部署規則**：沒資料庫就跑 `firestore:rules`，會自動建在美國 `nam5`，之後改不了。先用 `firebase firestore:databases:get "(default)" --project <專案ID>` 確認地區。
+- 網頁裡的 `firebaseConfig`（含 apiKey）放前端是正常的，真正的防線是安全規則。
+- 要登入時，請使用者到主控台的 Authentication 開啟登入方式（例如 Google）。
+- 要上傳檔案的 Cloud Storage 需要 Blaze，先走第 7 步。
+- 真實個資要先和使用者確認誰看得到，並實測沒登入時讀不到。
+
+規則從「只有本人能讀寫自己的資料」開始。在 `firebase.json` 的最外層加入 `"firestore": { "rules": "firestore.rules" }`，再新增 `firestore.rules`：
+
+```text
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /users/{uid}/{document=**} {
+      allow read, write: if request.auth != null && request.auth.uid == uid;
+    }
+  }
+}
+```
+
+部署：`firebase deploy --only firestore:rules --project <專案ID>`
+
+## 第 9 步：備份到 GitHub
+
+沒設過 Git 身分時（`git config user.name` 是空的），請使用者提供暱稱，email 建議用 GitHub 的 noreply 信箱，別讓私人信箱進 commit 紀錄。
+
+`git init` 後先 `git status` 檢查，確定沒有鑰匙和資料檔才加入。
+
+```bash
+git init
+git status
+git add .
+git commit -m "first deploy"
+gh repo create <名稱> --private --source=. --push
+```
+
+沒有 `gh` 時請使用者裝 GitHub CLI 並跑 `gh auth login`。**預設私人**，使用者明確要求才公開；公開過的鑰匙視同外洩。
+
+## 選配：push 就自動上線
+
+使用者要的話再做。這個指令是互動式的，**請他自己在終端機跑**：
+
+```bash
+npx -y firebase-tools@latest init hosting:github
+```
+
+它會建立部署用的服務帳戶，把金鑰加密存進 GitHub Secret，並產生 `.github/workflows/`。
+這些檔案要 commit 後推上 GitHub 才會生效，再到 repo 的 Actions 頁面確認綠燈。預覽網址接的也是**真實資料庫**。
+
+## 之後每次修改
+
+改檔 → 本機看過 → `firebase deploy --only hosting --project <專案ID>` → 驗收 → `git commit`、`git push`。
+開了 Service Worker 或 PWA 的話，還要更新版本號，否則手機會卡舊版。
+
+## 常見錯誤
+
+| 看到 | 處理 |
+|---|---|
+| `Failed to authenticate` | 重走第 3 步 |
+| 登入時 `Premature close`、`credentials no longer valid` | 多半是 Node 版本問題（2026 年曾有 24.17、22.23 的回報），換另一個 LTS 小版本再試 |
+| `403`、`permission denied` | 帳號不對，用 `firebase login:list` 檢查 |
+| `CONNECT tunnel failed`、proxy 回 403 | 你在雲端沙盒，回第 0 步 |
+| 找不到 site | `firebase hosting:sites:create` |
+| 網站是舊版 | 檢查 `firebase.json` 的快取設定，再開無痕視窗 |
+| 網頁空白 | 看瀏覽器主控台錯誤，檢查 `public` 路徑和資源路徑 |
+| 卡住超過 2 次 | 先查錯誤全文，不要亂改，也不要改用更寬的權限硬過 |
+
+## 交付時回報
+
+用白話告訴使用者：網址、專案 ID、登入的 Google 帳號、GitHub 位置、是否有任何會收費的東西、下次怎麼修改。
